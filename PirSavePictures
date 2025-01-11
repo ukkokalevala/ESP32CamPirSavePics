@@ -1,0 +1,126 @@
+#include <Arduino.h>
+#include "esp_camera.h"
+#include "FS.h"
+#include "SD_MMC.h"
+
+// Pin definitions for ESP32-CAM
+#define PWDN_GPIO_NUM    32
+#define RESET_GPIO_NUM   -1
+#define XCLK_GPIO_NUM    0
+#define SIOD_GPIO_NUM    26
+#define SIOC_GPIO_NUM    27
+
+#define Y9_GPIO_NUM      35
+#define Y8_GPIO_NUM      34
+#define Y7_GPIO_NUM      39
+#define Y6_GPIO_NUM      36
+#define Y5_GPIO_NUM      21
+#define Y4_GPIO_NUM      19
+#define Y3_GPIO_NUM      18
+#define Y2_GPIO_NUM      5
+#define VSYNC_GPIO_NUM   25
+#define HREF_GPIO_NUM    23
+#define PCLK_GPIO_NUM    22
+
+#define PIR_SENSOR_PIN   14  // PIR sensor pin
+#define LED_GPIO_PIN     4   // Onboard LED pin
+
+bool motionDetected = false;
+
+void IRAM_ATTR onMotionDetected() {
+  motionDetected = true; // Set flag when PIR sensor detects motion
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize GPIO ISR Service
+  if (!gpio_install_isr_service(ESP_INTR_FLAG_IRAM)) {
+      Serial.println("GPIO ISR Service already installed.");
+  }
+
+  // Initialize the LED pin
+  pinMode(LED_GPIO_PIN, OUTPUT);
+  digitalWrite(LED_GPIO_PIN, LOW);
+
+  // Initialize the PIR sensor pin
+  pinMode(PIR_SENSOR_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIR_SENSOR_PIN), onMotionDetected, RISING);
+
+  // Reset the camera
+  pinMode(PWDN_GPIO_NUM, OUTPUT);
+  digitalWrite(PWDN_GPIO_NUM, LOW);
+  delay(10);
+  digitalWrite(PWDN_GPIO_NUM, HIGH);
+
+  // Initialize SD Card
+  if (!SD_MMC.begin()) {
+    Serial.println("SD Card initialization failed!");
+    return;
+  }
+  Serial.println("SD Card initialized successfully");
+
+  // Initialize the camera
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_UXGA;
+  config.jpeg_quality = 10;
+  config.fb_count = 1;
+
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera initialization failed with error 0x%x\n", err);
+    return;
+  }
+  Serial.println("ESP32-CAM is ready.");
+}
+
+void loop() {
+  if (motionDetected) {
+    motionDetected = false; // Reset the flag
+    Serial.println("Motion detected, capturing image...");
+    digitalWrite(LED_GPIO_PIN, HIGH);
+
+    // Capture image
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("Camera capture failed");
+      digitalWrite(LED_GPIO_PIN, LOW);
+      return;
+    }
+
+    // Save image to SD card
+    String path = "/photo_" + String(millis()) + ".jpg";
+    File file = SD_MMC.open(path.c_str(), FILE_WRITE);
+    if (!file) {
+      Serial.println("Failed to open file for writing");
+    } else {
+      file.write(fb->buf, fb->len);
+      Serial.printf("Saved file to: %s\n", path.c_str());
+    }
+    file.close();
+    esp_camera_fb_return(fb);
+
+    digitalWrite(LED_GPIO_PIN, LOW);
+    delay(5000); // Prevent repeated triggers
+  }
+}
